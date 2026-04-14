@@ -9,6 +9,10 @@ REM   start.bat --gpu --tunnel --capture --stream --key=YOUR_KEY  (Elgato + RTMP
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
+REM Ensure data directories exist
+if not exist data\captures mkdir data\captures
+if not exist data\crops mkdir data\crops
+
 REM Stop any existing containers first
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.tunnel.yml down 2>nul
 

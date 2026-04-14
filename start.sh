@@ -9,6 +9,9 @@
 set -e
 cd "$(dirname "$0")"
 
+# Ensure data directories exist
+mkdir -p data/captures data/crops
+
 # Stop any existing containers first
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.tunnel.yml down 2>/dev/null || true
 
