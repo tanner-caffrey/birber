@@ -17,8 +17,8 @@ services:
       - ./data:/app/data
       - birber-models:/app/models
     ports:
-      - "8765:8765"   # WebSocket (standalone)
-      - "8080:8080"   # Web server (API + WebSocket + images)
+      - "${BIRBER_WS_PORT:-8765}:8765"     # WebSocket (standalone)
+      - "${BIRBER_WEB_PORT:-8080}:8080"   # Web server (API + WebSocket + images)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
