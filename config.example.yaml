@@ -31,7 +31,7 @@ detection:
   bird_class_id: 14
 
 classification:
-  model: "dennisjooo/Birds-Classifier-EfficientNetB2"
+  model: "prithivMLmods/Bird-Species-Classifier-526"
   confidence_threshold: 0.01
   top_k: 10
   # Regional species get their confidence multiplied by this factor

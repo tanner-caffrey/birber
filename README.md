@@ -2,7 +2,7 @@
 
 Watches a bird feeder camera, identifies species, and logs what shows up.
 
-Uses YOLOv8 to detect birds in the frame, then runs them through an EfficientNetB2 classifier trained on 525 species. When a bird is identified, it saves the frame, logs it to SQLite, and fires events (webhook, MQTT, WebSocket). There's a web UI with a live stream and detection feed, and it can push through a Cloudflare tunnel so you can check on your feeder from anywhere.
+Uses YOLOv8 to detect birds in the frame, then runs them through a SigLIP2-based classifier trained on 525+ species. When a bird is identified, it saves the frame, logs it to SQLite, and fires events (webhook, MQTT, WebSocket). There's a web UI with a live stream and detection feed, and it can push through a Cloudflare tunnel so you can check on your feeder from anywhere.
 
 ## How it works
 
@@ -13,7 +13,7 @@ Camera → Capture Card → ffmpeg → MediaMTX (RTSP)
                               1. Read frame
                               2. Motion detection (skip static frames)
                               3. YOLOv8n: is there a bird?
-                              4. EfficientNetB2: what species?
+                              4. SigLIP2 classifier: what species?
                               5. Vote tracker (consensus over multiple frames)
                               6. Log to SQLite, save frame, fire events
                               7. Push annotated stream back to MediaMTX
@@ -53,7 +53,8 @@ chmod +x start.sh
 
 | Flag | What it does |
 |------|-------------|
-| `--gpu` | CUDA acceleration (NVIDIA only) |
+| `--gpu` | CUDA acceleration (NVIDIA) |
+| `--rocm` | ROCm acceleration (AMD, Linux only) |
 | `--tunnel` | Starts Cloudflare tunnel |
 | `--capture` | Runs local ffmpeg capture from the capture card into MediaMTX |
 | `--stream` | Pushes the annotated feed to an RTMP server |
@@ -103,11 +104,21 @@ Set `BIRBER_CAPTURE_URL=http://<pi-ip>:8080/stream` in `.env` and run without `-
 
 ## Classification accuracy
 
-The EfficientNetB2 model was trained on curated bird photos, not compressed video from capture cards. It's not great at single-frame classification from a camera feed. To compensate:
+The classifier model was trained on curated bird photos, not compressed video from capture cards. It's not great at single-frame classification from a camera feed. To compensate:
 
 - **Regional boosting** — species in your `regional_species` list get a 3x confidence multiplier, so the model prefers plausible local birds over exotic lookalikes
 - **Vote tracking** — instead of trusting any single frame, birber accumulates votes across multiple frames and only reports a species when there's consensus (default: 5 votes, 50% agreement)
 - **Training data collection** — every crop the classifier sees is saved to `data/crops/`. Use the `/review` page to label them. Once you have enough labeled data, you can fine-tune the model on your specific camera setup.
+
+## AMD GPU (ROCm)
+
+If you have an AMD GPU, install the [ROCm driver](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/) and use `--rocm` instead of `--gpu`. For RDNA 3.5 GPUs (Radeon 8060S, etc.), you may need to set `HSA_OVERRIDE_GFX_VERSION` in your `.env`:
+
+```
+HSA_OVERRIDE_GFX_VERSION=11.0.0
+```
+
+This maps newer GPU architectures to a supported target. RDNA 3 GPUs (7900 XTX, etc.) should work without it.
 
 ## Project structure
 
@@ -116,9 +127,11 @@ The EfficientNetB2 model was trained on curated bird photos, not compressed vide
 ├── stop.bat / stop.sh         # stop everything
 ├── config.example.yaml        # config template
 ├── docker-compose.yml         # main services
-├── docker-compose.gpu.yml     # GPU overlay
+├── docker-compose.gpu.yml     # NVIDIA GPU overlay
+├── docker-compose.rocm.yml    # AMD ROCm GPU overlay
 ├── docker-compose.tunnel.yml  # Cloudflare tunnel overlay
-├── Dockerfile
+├── Dockerfile                 # CUDA base image
+├── Dockerfile.rocm            # ROCm base image
 ├── host/
 │   ├── mediamtx.yml           # RTSP server config
 │   ├── start-capture.bat/sh   # host-side ffmpeg capture

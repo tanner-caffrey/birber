@@ -2,18 +2,32 @@
 # Birber — one command to start everything.
 #
 # Usage:
-#   ./start.sh --gpu --tunnel                   (Pi Zero camera)
-#   ./start.sh --gpu --tunnel --capture          (capture card)
+#   ./start.sh --gpu --tunnel                   (NVIDIA GPU, Pi Zero camera)
+#   ./start.sh --rocm --tunnel --capture         (AMD GPU, capture card)
+#   ./start.sh --gpu --tunnel --capture          (NVIDIA GPU, capture card)
 #   ./start.sh --gpu --tunnel --capture --stream  (+ RTMP streaming)
 
 set -e
 cd "$(dirname "$0")"
 
+cleanup() {
+    echo
+    echo "Shutting down..."
+    # Kill host ffmpeg if we started one
+    [ -n "$FFMPEG_PID" ] && kill "$FFMPEG_PID" 2>/dev/null
+    docker compose $COMPOSE_FILES down 2>/dev/null || true
+    echo "Stopped."
+}
+trap cleanup INT TERM
+
 # Ensure data directories exist
 mkdir -p data/captures data/crops
 
+# Kill any leftover ffmpeg capture from a previous run
+pkill -f "ffmpeg.*rtsp://localhost:8554/birdcam" 2>/dev/null || true
+
 # Stop any existing containers first
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.tunnel.yml down 2>/dev/null || true
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.rocm.yml -f docker-compose.tunnel.yml down 2>/dev/null || true
 
 COMPOSE_FILES="-f docker-compose.yml"
 CAPTURE=0
@@ -23,6 +37,7 @@ export BIRBER_CAPTURE_URL=""
 for arg in "$@"; do
     case "$arg" in
         --gpu)     COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.gpu.yml" ;;
+        --rocm)    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.rocm.yml" ;;
         --tunnel)  COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.tunnel.yml" ;;
         --capture) CAPTURE=1 ;;
         --stream)  export BIRBER_RTMP_ENABLED=1 ;;
@@ -30,7 +45,8 @@ for arg in "$@"; do
     esac
 done
 
-echo "$COMPOSE_FILES" | grep -q "gpu" && echo "GPU mode enabled."
+echo "$COMPOSE_FILES" | grep -q "gpu" && echo "NVIDIA GPU mode enabled."
+echo "$COMPOSE_FILES" | grep -q "rocm" && echo "ROCm GPU mode enabled."
 echo "$COMPOSE_FILES" | grep -q "tunnel" && echo "Tunnel mode enabled."
 [ -n "$BIRBER_RTMP_ENABLED" ] && echo "RTMP streaming enabled."
 
@@ -51,7 +67,9 @@ docker compose $COMPOSE_FILES up -d --build
 if [ "$CAPTURE" -eq 0 ]; then
     echo
     echo "Docker services started. No local capture (using network camera)."
-    exit 0
+    echo "Press Ctrl+C to stop."
+    # Wait forever so the trap can catch Ctrl+C
+    while true; do sleep 86400 & wait $!; done
 fi
 
 echo
@@ -97,9 +115,11 @@ else
     exit 1
 fi
 
-echo "Starting ffmpeg capture..."
+echo "Starting ffmpeg capture... (Ctrl+C to stop everything)"
 ffmpeg $DEVICE_INPUT \
   -video_size "${WIDTH}x${HEIGHT}" -framerate "$FPS" \
   -pix_fmt yuv420p \
   -c:v libx264 -preset "$PRESET" -crf "$CRF" $TUNE_FLAG \
-  -f rtsp -rtsp_transport tcp rtsp://localhost:8554/birdcam
+  -f rtsp -rtsp_transport tcp rtsp://localhost:8554/birdcam &
+FFMPEG_PID=$!
+wait "$FFMPEG_PID"

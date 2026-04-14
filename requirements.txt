@@ -1,6 +1,6 @@
 opencv-python-headless>=4.9.0
 ultralytics>=8.1.0
-transformers>=4.36.0
+transformers>=4.49.0
 # torch and torchvision provided by base image
 Pillow>=10.0.0
 PyYAML>=6.0
