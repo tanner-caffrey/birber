@@ -30,6 +30,8 @@ class BirdClassifier:
         self.config = config
         self._crops_dir = Path(crops_dir)
         self._crops_dir.mkdir(parents=True, exist_ok=True)
+        self._pending_crop = None
+        self._pending_scored = None
         logger.info("Loading classifier: %s (device=%s)", config.model, device)
         device_id = 0 if device == "cuda" else -1
         self._pipe = pipeline(
@@ -44,8 +46,13 @@ class BirdClassifier:
                 len(self._regional), config.regional_boost,
             )
 
-    def _save_crop(self, crop_bgr: np.ndarray, top_results: list[tuple]):
-        """Save crop image and metadata for later review/training."""
+    def save_pending_crop(self):
+        """Save the most recent crop from classify() for review/training."""
+        if self._pending_crop is None or self._pending_scored is None:
+            return
+        crop_bgr = self._pending_crop
+        top_results = self._pending_scored
+
         crop_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
         img_path = self._crops_dir / f"{crop_id}.jpg"
         meta_path = self._crops_dir / f"{crop_id}.json"
@@ -59,7 +66,7 @@ class BirdClassifier:
                 {"species": s, "raw": round(r, 4), "boosted": round(b, 4), "regional": reg}
                 for s, r, b, reg in top_results[:5]
             ],
-            "label": None,  # filled in by review UI
+            "label": None,
             "reviewed": False,
         }
         meta_path.write_text(json.dumps(meta, indent=2))
@@ -102,8 +109,9 @@ class BirdClassifier:
                 s[0], s[1] * 100, s[2] * 100, tag,
             )
 
-        # Save crop for training/review
-        self._save_crop(crop, scored)
+        # Stash crop for on-demand saving by the caller
+        self._pending_crop = crop
+        self._pending_scored = scored
 
         classifications = []
         for species, raw_conf, boosted, _ in scored:

@@ -123,12 +123,14 @@ class BirdTracker:
     """Tracks birds by position and accumulates classification votes."""
 
     def __init__(self, iou_threshold: float = 0.3, min_votes: int = 5,
-                 consensus_ratio: float = 0.5, expire_seconds: float = 3.0):
+                 consensus_ratio: float = 0.5, expire_seconds: float = 3.0,
+                 crop_interval: float = 30.0):
         self.iou_threshold = iou_threshold
         self.min_votes = min_votes
         self.consensus_ratio = consensus_ratio
         self.expire_seconds = expire_seconds
-        # Each tracked bird: {bbox, votes: Counter, confirmed_species, confirmed_conf, last_seen, reported}
+        self.crop_interval = crop_interval
+        # Each tracked bird: {bbox, votes: Counter, confirmed_species, confirmed_conf, last_seen, reported, last_crop_time}
         self._birds: list[dict] = []
 
     @staticmethod
@@ -157,7 +159,7 @@ class BirdTracker:
         return -1
 
     def update(self, det, species: str, confidence: float, now: float):
-        """Add a classification vote for a detection. Returns confirmed species or None."""
+        """Add a classification vote for a detection. Returns (consensus_result, should_save_crop)."""
         bbox = (det.x, det.y, det.w, det.h)
         idx = self._find_match(bbox)
 
@@ -174,10 +176,12 @@ class BirdTracker:
                 "confirmed_conf": 0.0,
                 "last_seen": now,
                 "reported": False,
+                "last_crop_time": 0,
             }
             self._birds.append(bird)
 
         # Check for consensus
+        consensus = None
         total = sum(bird["votes"].values())
         top_species, top_count = bird["votes"].most_common(1)[0]
         if total >= self.min_votes and top_count / total >= self.consensus_ratio:
@@ -185,8 +189,19 @@ class BirdTracker:
             bird["confirmed_conf"] = confidence
             if not bird["reported"]:
                 bird["reported"] = True
-                return top_species, confidence
-        return None
+                consensus = (top_species, confidence)
+
+        # Save a crop on consensus, or periodically for training variety
+        save_crop = False
+        if consensus:
+            save_crop = True
+        elif now - bird["last_crop_time"] >= self.crop_interval:
+            save_crop = True
+
+        if save_crop:
+            bird["last_crop_time"] = now
+
+        return consensus, save_crop
 
     def get_display_labels(self):
         """Get current labels for overlay display."""
@@ -365,8 +380,11 @@ def capture_loop(
 
             top = classifications[0]
 
-            # Feed vote into tracker — returns (species, conf) on consensus
-            result = tracker.update(det, top.species, top.confidence, now)
+            # Feed vote into tracker
+            result, save_crop = tracker.update(det, top.species, top.confidence, now)
+
+            if save_crop:
+                classifier.save_pending_crop()
 
             if result:
                 species, conf = result
