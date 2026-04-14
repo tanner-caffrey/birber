@@ -9,6 +9,16 @@ rtspAddress: :8554
 
 hls: yes
 hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsVariant: fmp4
+hlsSegmentCount: 7
+hlsSegmentDuration: 2s
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: [$BIRBER_HOST_IP]
 
 # Allow any path to be published/read
 paths:

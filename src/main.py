@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import signal
+import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -186,10 +187,14 @@ class BirdTracker:
         top_species, top_count = bird["votes"].most_common(1)[0]
         if total >= self.min_votes and top_count / total >= self.consensus_ratio:
             bird["confirmed_species"] = top_species
-            bird["confirmed_conf"] = confidence
+            # Smooth confidence with EMA to avoid jumpy % display
+            if bird["confirmed_conf"] > 0:
+                bird["confirmed_conf"] = 0.3 * confidence + 0.7 * bird["confirmed_conf"]
+            else:
+                bird["confirmed_conf"] = confidence
             if not bird["reported"]:
                 bird["reported"] = True
-                consensus = (top_species, confidence)
+                consensus = (top_species, bird["confirmed_conf"])
 
         # Save a crop on consensus, or periodically for training variety
         save_crop = False
@@ -291,13 +296,91 @@ def capture_loop(
     event_queue: SimpleQueue,
     shutdown_flag,
 ):
-    """Synchronous capture + ML loop, runs in a thread."""
+    """Capture + overlay loop with async ML processing in a separate thread."""
     tracker = BirdTracker(iou_threshold=0.3, min_votes=5, consensus_ratio=0.5, expire_seconds=3.0)
     overlay = OverlayRenderer(persist_seconds=2.0)
-    frame_idx = 0
     last_power_cycle = time.monotonic()
     cycle_interval = config.capture.power_cycle_interval * 60  # convert to seconds
     kasa_ip = config.capture.kasa_plug_ip
+
+    # Shared frame slot for the ML thread (always holds the latest frame)
+    _ml_lock = threading.Lock()
+    _ml_frame = [None]
+
+    def ml_worker():
+        """Background thread: grabs latest frame, runs detection + classification."""
+        while not shutdown_flag.is_set():
+            with _ml_lock:
+                frame = _ml_frame[0]
+                _ml_frame[0] = None
+
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            has_motion, _ = motion.detect(frame)
+            if not has_motion:
+                tracker.expire(time.monotonic())
+                continue
+
+            detections = detector.detect(frame)
+            if not detections:
+                tracker.expire(time.monotonic())
+                continue
+
+            now = time.monotonic()
+            timestamp = datetime.now(timezone.utc)
+            timestamp_str = timestamp.isoformat()
+
+            for det in detections:
+                classifications = classifier.classify(
+                    frame, (det.x, det.y, det.w, det.h)
+                )
+                if not classifications:
+                    continue
+
+                top = classifications[0]
+                result, save_crop = tracker.update(det, top.species, top.confidence, now)
+
+                if save_crop:
+                    classifier.save_pending_crop()
+
+                if result:
+                    species, conf = result
+
+                    image_path = storage.save_frame(
+                        frame, species, conf, det, timestamp
+                    )
+
+                    db.log_sighting(
+                        timestamp=timestamp_str,
+                        species=species,
+                        species_confidence=conf,
+                        detection_confidence=det.confidence,
+                        image_path=image_path,
+                        bbox=(det.x, det.y, det.w, det.h),
+                    )
+
+                    bird_event = BirdEvent(
+                        timestamp=timestamp_str,
+                        species=species,
+                        confidence=conf,
+                        detection_confidence=det.confidence,
+                        bbox=(det.x, det.y, det.w, det.h),
+                        image_path=image_path,
+                    )
+                    event_queue.put(bird_event)
+
+                    logger.info(
+                        "🐦 %s (%.0f%%) detected at (%d,%d) [det: %.0f%%]",
+                        species,
+                        conf * 100,
+                        det.x,
+                        det.y,
+                        det.confidence * 100,
+                    )
+
+            tracker.expire(now)
 
     # Power-cycle on startup
     if kasa_ip:
@@ -312,6 +395,15 @@ def capture_loop(
         return
 
     logger.info("Birber is running. Watching for birds...")
+
+    ml_thread = threading.Thread(target=ml_worker, name="ml-pipeline", daemon=True)
+    ml_thread.start()
+
+    # FPS tracking
+    frame_count = 0
+    fps_start = time.monotonic()
+    output_frame_interval = 1.0 / max(config.stream.fps, 1)
+    next_output_time = time.monotonic()
 
     while not shutdown_flag.is_set():
         # Power-cycle the camera on a schedule to prevent auto-shutoff
@@ -334,8 +426,6 @@ def capture_loop(
             if frame is None:
                 continue
 
-        frame_idx += 1
-
         # Detect static/no-signal screen
         if _is_static_screen(frame):
             info = _render_info_screen(config.stream.width, config.stream.height, db)
@@ -343,90 +433,28 @@ def capture_loop(
             rtmp.write_frame(info)
             continue
 
-        # Only run ML pipeline every Nth frame
-        if frame_idx % config.processing.frame_skip != 0:
-            out = overlay.draw(frame, tracker._birds)
-            stream.write_frame(out)
-            rtmp.write_frame(out)
-            continue
+        # Post latest frame to ML thread (non-blocking, always newest)
+        with _ml_lock:
+            _ml_frame[0] = frame
 
-        # Check for motion
-        has_motion, motion_score = motion.detect(frame)
-        if not has_motion:
-            out = overlay.draw(frame, tracker._birds)
-            stream.write_frame(out)
-            rtmp.write_frame(out)
-            continue
-
-        # Detect birds
-        detections = detector.detect(frame)
-        if not detections:
-            out = overlay.draw(frame, tracker._birds)
-            stream.write_frame(out)
-            rtmp.write_frame(out)
-            continue
-
-        # Classify each detected bird and accumulate votes
-        now = time.monotonic()
-        timestamp = datetime.now(timezone.utc)
-        timestamp_str = timestamp.isoformat()
-
-        for det in detections:
-            classifications = classifier.classify(
-                frame, (det.x, det.y, det.w, det.h)
-            )
-            if not classifications:
-                continue
-
-            top = classifications[0]
-
-            # Feed vote into tracker
-            result, save_crop = tracker.update(det, top.species, top.confidence, now)
-
-            if save_crop:
-                classifier.save_pending_crop()
-
-            if result:
-                species, conf = result
-
-                image_path = storage.save_frame(
-                    frame, species, conf, det, timestamp
-                )
-
-                db.log_sighting(
-                    timestamp=timestamp_str,
-                    species=species,
-                    species_confidence=conf,
-                    detection_confidence=det.confidence,
-                    image_path=image_path,
-                    bbox=(det.x, det.y, det.w, det.h),
-                )
-
-                bird_event = BirdEvent(
-                    timestamp=timestamp_str,
-                    species=species,
-                    confidence=conf,
-                    detection_confidence=det.confidence,
-                    bbox=(det.x, det.y, det.w, det.h),
-                    image_path=image_path,
-                )
-                event_queue.put(bird_event)
-
-                logger.info(
-                    "🐦 %s (%.0f%%) detected at (%d,%d) [det: %.0f%%]",
-                    species,
-                    conf * 100,
-                    det.x,
-                    det.y,
-                    det.confidence * 100,
-                )
-
-        # Expire birds that left the frame
-        tracker.expire(now)
-
+        # Draw overlay and publish at the configured output FPS
         out = overlay.draw(frame, tracker._birds)
-        stream.write_frame(out)
-        rtmp.write_frame(out)
+        now_output = time.monotonic()
+        if now_output >= next_output_time:
+            stream.write_frame(out)
+            rtmp.write_frame(out)
+            next_output_time = now_output + output_frame_interval
+
+        # FPS tracking
+        frame_count += 1
+        now_fps = time.monotonic()
+        if now_fps - fps_start >= 5.0:
+            fps = frame_count / (now_fps - fps_start)
+            logger.info("Frame loop: %.1f fps", fps)
+            frame_count = 0
+            fps_start = now_fps
+
+    ml_thread.join(timeout=5)
 
     # Cleanup synchronous resources
     capture.disconnect()

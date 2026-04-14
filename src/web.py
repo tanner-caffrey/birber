@@ -30,11 +30,12 @@ STREAM_PAGE = """<!DOCTYPE html>
             background: #000; border-radius: 8px; overflow: hidden;
             margin: 1rem 0; aspect-ratio: 16/9; position: relative;
         }
-        video { width: 100%; height: 100%; object-fit: contain; }
+        video, iframe { width: 100%; height: 100%; object-fit: contain; border: 0; }
         #status {
             position: absolute; bottom: 8px; left: 8px;
             background: rgba(0,0,0,0.6); padding: 4px 10px;
             border-radius: 4px; font-size: 0.8rem;
+            z-index: 2;
         }
         #events {
             width: 100%; max-width: 960px;
@@ -81,7 +82,7 @@ STREAM_PAGE = """<!DOCTYPE html>
 <body>
     <h1>Birber — Live Bird Feeder</h1>
     <div id="player-wrap">
-        <video id="video" autoplay muted playsinline></video>
+        <div id="player"></div>
         <div id="status">Connecting...</div>
     </div>
     <div id="events">
@@ -93,33 +94,99 @@ STREAM_PAGE = """<!DOCTYPE html>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script>
-        const video = document.getElementById("video");
+        const player = document.getElementById("player");
         const status = document.getElementById("status");
         const eventList = document.getElementById("event-list");
 
-        // HLS player
-        const hlsUrl = "/hls/birber-annotated/index.m3u8";
-        if (Hls.isSupported()) {
-            const hls = new Hls({ liveSyncDurationCount: 2, liveMaxLatencyDurationCount: 4 });
-            hls.loadSource(hlsUrl);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                status.textContent = "Live";
-                video.play();
-            });
-            hls.on(Hls.Events.ERROR, (_, data) => {
-                if (data.fatal) {
-                    status.textContent = "Reconnecting...";
-                    setTimeout(() => hls.loadSource(hlsUrl), 3000);
-                }
-            });
-        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-            video.src = hlsUrl;
-            video.addEventListener("loadedmetadata", () => {
-                status.textContent = "Live";
-                video.play();
-            });
+        function isPrivateHostname(hostname) {
+            return hostname === "localhost"
+                || hostname === "127.0.0.1"
+                || hostname === "[::1]"
+                || /^10\./.test(hostname)
+                || /^192\.168\./.test(hostname)
+                || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
         }
+
+        function preferWebRtc() {
+            return location.protocol === "http:" || isPrivateHostname(location.hostname);
+        }
+
+        async function startHlsPlayback() {
+            const video = document.createElement("video");
+            video.autoplay = true;
+            video.muted = true;
+            video.playsInline = true;
+            player.replaceChildren(video);
+
+            const hlsUrl = "/hls/birber-annotated/index.m3u8";
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    liveSyncDurationCount: 3,
+                    liveMaxLatencyDurationCount: 6,
+                    maxLiveSyncPlaybackRate: 1.05,
+                    lowLatencyMode: false,
+                    backBufferLength: 30,
+                });
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    status.textContent = "Live (HLS)";
+                    video.play();
+                });
+                hls.on(Hls.Events.ERROR, (_, data) => {
+                    if (data.fatal) {
+                        status.textContent = "Reconnecting...";
+                        setTimeout(() => hls.loadSource(hlsUrl), 3000);
+                    }
+                });
+                return true;
+            }
+            if (video.canPlayType("application/vnd.apple.mpegurl")) {
+                video.src = hlsUrl;
+                video.addEventListener("loadedmetadata", () => {
+                    status.textContent = "Live (HLS)";
+                    video.play();
+                }, { once: true });
+                return true;
+            }
+            return false;
+        }
+
+        async function startWebRtcPlayback() {
+            const webrtcPort = "8889";
+            const iframe = document.createElement("iframe");
+            iframe.allow = "autoplay; fullscreen; camera; microphone";
+            iframe.src = `${location.protocol}//${location.hostname}:${webrtcPort}/birber-annotated`;
+            player.replaceChildren(iframe);
+            status.textContent = "Live (WebRTC)";
+
+            const watchdog = setTimeout(async () => {
+                console.warn("WebRTC iframe timed out, falling back to HLS");
+                await startHlsPlayback();
+            }, 5000);
+
+            iframe.addEventListener("load", () => clearTimeout(watchdog), { once: true });
+            return true;
+        }
+
+        async function startPlayback() {
+            if (preferWebRtc()) {
+                try {
+                    status.textContent = "Connecting (WebRTC)...";
+                    await startWebRtcPlayback();
+                    return;
+                } catch (err) {
+                    console.warn("WebRTC failed, falling back to HLS", err);
+                }
+            }
+            status.textContent = "Connecting (HLS)...";
+            const ok = await startHlsPlayback();
+            if (!ok) {
+                status.textContent = "Playback unavailable";
+            }
+        }
+
+        startPlayback();
 
         // WebSocket for live events
         function connectWS() {
@@ -188,27 +255,91 @@ EMBED_PAGE = """<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; }
         body { background: transparent; overflow: hidden; }
-        video { width: 100%; height: 100vh; object-fit: contain; }
+        video, iframe { width: 100%; height: 100vh; object-fit: contain; border: 0; }
     </style>
 </head>
 <body>
-    <video id="video" autoplay muted playsinline></video>
+    <div id="player"></div>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script>
-        const video = document.getElementById("video");
-        const hlsUrl = "/hls/birber-annotated/index.m3u8";
-        if (Hls.isSupported()) {
-            const hls = new Hls({ liveSyncDurationCount: 2, liveMaxLatencyDurationCount: 4 });
-            hls.loadSource(hlsUrl);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
-            hls.on(Hls.Events.ERROR, (_, data) => {
-                if (data.fatal) setTimeout(() => hls.loadSource(hlsUrl), 3000);
-            });
-        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-            video.src = hlsUrl;
-            video.addEventListener("loadedmetadata", () => video.play());
+        const player = document.getElementById("player");
+
+        function isPrivateHostname(hostname) {
+            return hostname === "localhost"
+                || hostname === "127.0.0.1"
+                || hostname === "[::1]"
+                || /^10\./.test(hostname)
+                || /^192\.168\./.test(hostname)
+                || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
         }
+
+        function preferWebRtc() {
+            return location.protocol === "http:" || isPrivateHostname(location.hostname);
+        }
+
+        async function startHlsPlayback() {
+            const video = document.createElement("video");
+            video.autoplay = true;
+            video.muted = true;
+            video.playsInline = true;
+            player.replaceChildren(video);
+
+            const hlsUrl = "/hls/birber-annotated/index.m3u8";
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    liveSyncDurationCount: 3,
+                    liveMaxLatencyDurationCount: 6,
+                    maxLiveSyncPlaybackRate: 1.05,
+                    lowLatencyMode: false,
+                    backBufferLength: 30,
+                });
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    video.play();
+                });
+                hls.on(Hls.Events.ERROR, (_, data) => {
+                    if (data.fatal) {
+                        setTimeout(() => hls.loadSource(hlsUrl), 3000);
+                    }
+                });
+                return true;
+            }
+            if (video.canPlayType("application/vnd.apple.mpegurl")) {
+                video.src = hlsUrl;
+                video.addEventListener("loadedmetadata", () => video.play(), { once: true });
+                return true;
+            }
+            return false;
+        }
+
+        async function startWebRtcPlayback() {
+            const webrtcPort = "8889";
+            const iframe = document.createElement("iframe");
+            iframe.allow = "autoplay; fullscreen; camera; microphone";
+            iframe.src = `${location.protocol}//${location.hostname}:${webrtcPort}/birber-annotated`;
+            player.replaceChildren(iframe);
+
+            const watchdog = setTimeout(async () => {
+                await startHlsPlayback();
+            }, 5000);
+
+            iframe.addEventListener("load", () => clearTimeout(watchdog), { once: true });
+            return true;
+        }
+
+        async function startPlayback() {
+            if (preferWebRtc()) {
+                try {
+                    await startWebRtcPlayback();
+                    return;
+                } catch (_) {
+                }
+            }
+            await startHlsPlayback();
+        }
+
+        startPlayback();
     </script>
 </body>
 </html>"""

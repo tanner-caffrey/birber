@@ -34,8 +34,10 @@ class RTSPOutputStream:
             "-i", "-",
             "-pix_fmt", "yuv420p",
             "-c:v", "libx264",
+            "-profile:v", "baseline",
             "-preset", self.config.preset,
             "-crf", str(self.config.crf),
+            "-x264opts", "bframes=0",
         ]
         if self.config.tune:
             cmd += ["-tune", self.config.tune]

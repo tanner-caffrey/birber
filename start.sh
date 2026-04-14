@@ -6,9 +6,21 @@
 #   ./start.sh --rocm --tunnel --capture         (AMD GPU, capture card)
 #   ./start.sh --gpu --tunnel --capture          (NVIDIA GPU, capture card)
 #   ./start.sh --gpu --tunnel --capture --stream  (+ RTMP streaming)
+#
+# Set BIRBER_FLAGS in .env to use defaults when running without arguments:
+#   BIRBER_FLAGS="--rocm --tunnel --capture"
 
 set -e
 cd "$(dirname "$0")"
+
+# Load default flags from .env if no arguments given
+if [ $# -eq 0 ] && [ -f .env ]; then
+    DEFAULT_FLAGS=$(grep -m1 '^BIRBER_FLAGS=' .env 2>/dev/null | sed 's/^BIRBER_FLAGS=//' | tr -d '"'"'" || true)
+    if [ -n "$DEFAULT_FLAGS" ]; then
+        echo "Using default flags from .env: $DEFAULT_FLAGS"
+        set -- $DEFAULT_FLAGS
+    fi
+fi
 
 cleanup() {
     echo

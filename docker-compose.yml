@@ -3,9 +3,14 @@ services:
     image: bluenviron/mediamtx:1.17.1
     ports:
       - "8554:8554"   # RTSP
+      - "${BIRBER_WEBRTC_PORT:-8889}:8889"   # WebRTC HTTP
+      - "8189:8189/udp"   # WebRTC ICE UDP
+      - "8189:8189/tcp"   # WebRTC ICE TCP fallback
       - "9997:9997"   # API
     volumes:
       - ./host/mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      - BIRBER_HOST_IP=${BIRBER_HOST_IP:-}
     restart: unless-stopped
 
   birber:
