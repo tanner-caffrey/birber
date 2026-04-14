@@ -1,0 +1,138 @@
+capture:
+  rtsp_url: "rtsp://mediamtx:8554/birdcam"
+  # Kasa smart plug to power-cycle the camera (leave empty to disable)
+  kasa_plug_ip: ""
+  # Power-cycle the camera every N minutes to prevent auto-shutoff (0 to disable)
+  power_cycle_interval: 20
+  reconnect_delay: 5
+  buffer_size: 1
+  device_name: "Elgato HD60 X"
+  width: 1920
+  height: 1080
+  framerate: 30
+  # Encoding quality — applies to host capture (Elgato → MediaMTX)
+  # preset: ultrafast, veryfast, faster, fast, medium (slower = better quality)
+  # crf: 0-51, lower = better (18-28 typical range)
+  # tune: zerolatency, film, animation, or "" for none
+  preset: "veryfast"
+  crf: 20
+  tune: "zerolatency"
+
+processing:
+  device: "auto"        # "auto", "cuda", "cpu"
+  frame_skip: 5         # process every Nth frame for ML
+  motion_threshold: 2500
+  motion_blur_kernel: 21
+  reference_update_interval: 300  # seconds
+
+detection:
+  model: "yolov8n.pt"
+  confidence_threshold: 0.45
+  bird_class_id: 14
+
+classification:
+  model: "dennisjooo/Birds-Classifier-EfficientNetB2"
+  confidence_threshold: 0.01
+  top_k: 10
+  # Regional species get their confidence multiplied by this factor
+  # Set to 1.0 to disable boosting
+  regional_boost: 3.0
+  # Add species common in your area. Regional species get boosted in ranking
+  # so the model prefers local birds over exotic lookalikes.
+  # Uncommon birds still get through if confidence is high enough.
+  # Example below is for northeastern US — customize for your region.
+  regional_species:
+    - "House Sparrow"
+    - "House Finch"
+    - "American Goldfinch"
+    - "Northern Cardinal"
+    - "Blue Jay"
+    - "Black Capped Chickadee"
+    - "Tufted Titmouse"
+    - "White Breasted Nuthatch"
+    - "Red Breasted Nuthatch"
+    - "Mourning Dove"
+    - "Dark Eyed Junco"
+    - "Song Sparrow"
+    - "White Throated Sparrow"
+    - "Chipping Sparrow"
+    - "American Robin"
+    - "European Starling"
+    - "Common Grackle"
+    - "Red Winged Blackbird"
+    - "Brown Headed Cowbird"
+    - "Downy Woodpecker"
+    - "Hairy Woodpecker"
+    - "Red Bellied Woodpecker"
+    - "Carolina Wren"
+    - "Pine Siskin"
+    - "Purple Finch"
+    - "Gray Catbird"
+    - "Northern Mockingbird"
+    - "Cedar Waxwing"
+    - "Baltimore Oriole"
+    - "Rose Breasted Grosbeak"
+    - "Ruby Throated Hummingbird"
+    - "Cooper'S Hawk"
+    - "Sharp Shinned Hawk"
+    - "Rock Pigeon"
+    - "House Wren"
+
+stream:
+  enabled: true
+  output_url: "rtsp://mediamtx:8554/birber-annotated"
+  fps: 30
+  width: 1920
+  height: 1080
+  # Encoding quality — applies to output stream (birber → MediaMTX)
+  # Same options as capture above
+  preset: "veryfast"
+  crf: 20
+  tune: "zerolatency"
+
+rtmp:
+  enabled: false
+  url: ""
+  stream_key: ""
+  preset: "veryfast"
+  bitrate: "2500k"
+  # keyint = fps for 1s keyframe interval
+  keyint: 30
+
+events:
+  cooldown: 30  # seconds between events for same species
+  webhook:
+    enabled: false
+    urls: []
+    timeout: 10
+  mqtt:
+    enabled: false
+    broker: "localhost"
+    port: 1883
+    topic: "birber/sightings"
+  websocket:
+    enabled: true
+    port: 8765
+
+web:
+  enabled: true
+  port: 8080
+  # Endpoints:
+  #   GET  /api/sightings          — query sightings (?limit=50&offset=0&species=...)
+  #   GET  /api/sightings/latest   — most recent sighting
+  #   GET  /api/summary            — species counts
+  #   GET  /api/health             — health check
+  #   GET  /images/...             — saved bird images
+  #   WS   /ws                     — real-time bird events
+
+tunnel:
+  enabled: false
+  # Set TUNNEL_TOKEN env var or paste token here
+  token: ""
+
+storage:
+  save_directory: "data/captures"
+  jpeg_quality: 92
+
+database:
+  path: "data/sightings.db"

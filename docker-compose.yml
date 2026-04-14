@@ -1,0 +1,43 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.17.1
+    ports:
+      - "8554:8554"   # RTSP
+      - "9997:9997"   # API
+    volumes:
+      - ./host/mediamtx.yml:/mediamtx.yml:ro
+    restart: unless-stopped
+
+  birber:
+    build: .
+    depends_on:
+      - mediamtx
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - birber-models:/app/models
+    ports:
+      - "8765:8765"   # WebSocket (standalone)
+      - "8080:8080"   # Web server (API + WebSocket + images)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    environment:
+      - TRANSFORMERS_CACHE=/app/models/huggingface
+      - YOLO_CONFIG_DIR=/app/models/ultralytics
+      - BIRBER_RTMP_ENABLED=${BIRBER_RTMP_ENABLED:-}
+      - BIRBER_CAPTURE_URL=${BIRBER_CAPTURE_URL:-}
+      - BIRBER_STREAM_KEY=${BIRBER_STREAM_KEY:-}
+
+  # Cloudflare Tunnel — uncomment and set TUNNEL_TOKEN to enable
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   depends_on:
+  #     - birber
+  #   command: tunnel run
+  #   environment:
+  #     - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+  #   restart: unless-stopped
+
+volumes:
+  birber-models:

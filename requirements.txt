@@ -1,0 +1,10 @@
+opencv-python-headless>=4.9.0
+ultralytics>=8.1.0
+transformers>=4.36.0
+# torch and torchvision provided by base image
+Pillow>=10.0.0
+PyYAML>=6.0
+paho-mqtt>=2.0.0
+websockets>=12.0
+aiohttp>=3.9.0
+python-kasa>=0.7.0
